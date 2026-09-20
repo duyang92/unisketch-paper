@@ -1,5 +1,5 @@
-#ifndef UNIVSKETCH_H
-#define UNIVSKETCH_H
+#ifndef UNISKETCH_H
+#define UNISKETCH_H
 
 #include <limits.h>
 #include <string.h>
@@ -14,7 +14,7 @@
 #include "../../utils/Bucket.h"
 #include "../../utils/MurmurHash3.h"
 
-class univSketch {
+class uniSketch {
     typedef std::pair<uint32_t, uint32_t> pii;
 
    public:
@@ -56,7 +56,7 @@ class univSketch {
         return hash_val;
     }
 
-    univSketch(int m, int l, int s, int m_, int level, int bucket_size, uint32_t* hash_seeds_)
+    uniSketch(int m, int l, int s, int m_, int level, int bucket_size, uint32_t* hash_seeds_)
         : m(m), l(l), s(s), m_(m_), level(level), bucket_size(bucket_size) {
         hash_seeds = hash_seeds_;
 
@@ -93,7 +93,7 @@ class univSketch {
         }
     }
 
-    ~univSketch() {
+    ~uniSketch() {
         if (M != nullptr) {
             delete[] M;
         }

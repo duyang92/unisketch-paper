@@ -126,18 +126,19 @@ class myHeap {
 
     int findFlowIndex(const uint32_t& flow) {
         constexpr int blockSize = 8;
+        const int simdEnd = curSize - curSize % blockSize;
 
-        for (int i = 0; i < heapSize; i += blockSize) {
+        for (int i = 0; i < simdEnd; i += blockSize) {
             // Load 8 flow values into a SIMD register
             __m256i flowBatch = _mm256_set_epi32(
-                heap[i].second,
-                heap[i + 1].second,
-                heap[i + 2].second,
-                heap[i + 3].second,
-                heap[i + 4].second,
-                heap[i + 5].second,
+                heap[i + 7].second,
                 heap[i + 6].second,
-                heap[i + 7].second);
+                heap[i + 5].second,
+                heap[i + 4].second,
+                heap[i + 3].second,
+                heap[i + 2].second,
+                heap[i + 1].second,
+                heap[i].second);
 
             // Convert flow to SIMD register for comparison
             __m256i targetFlow = _mm256_set1_epi32(flow);
@@ -151,10 +152,13 @@ class myHeap {
             // Check if any of the elements match
             if (mask != 0) {
                 // Find the index of the matching element
-                int index = i + __builtin_ffs(mask) - 1;
-                if (index < curSize) {
-                    return index;
-                }
+                return i + __builtin_ctz(mask);
+            }
+        }
+
+        for (int i = simdEnd; i < curSize; ++i) {
+            if (heap[i].second == flow) {
+                return i;
             }
         }
 

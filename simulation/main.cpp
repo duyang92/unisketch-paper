@@ -1,283 +1,465 @@
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
-#include <unordered_map>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "../algorithms/m2d/m2d.h"
 #include "../algorithms/rskt/rskt.h"
 #include "../algorithms/spreadSketch/spreadsketch.h"
-#include "../algorithms/univ/univsketch.h"
-#include "../algorithms/vbitmap/vbitmap.h"
+#include "../algorithms/unisketch/unisketch.h"
+#include "../algorithms/vBitmap/vbitmap.h"
 
-using namespace std;
+using Packet = std::pair<uint32_t, uint32_t>;
+using Clock = std::chrono::steady_clock;
 
-typedef std::pair<uint32_t, uint32_t> pii;
+enum class Algorithm {
+    kUniSketch,
+    kVBitmapSs,
+    kVBitmapSsRskt,
+    kM2D,
+    kAll,
+};
 
-vector<vector<pii>> data_set;
-unordered_set<uint32_t> flow_set;
-ifstream inf;
-ofstream ouf;
+struct Options {
+    Algorithm algorithm = Algorithm::kUniSketch;
+    std::string algorithm_name = "unisketch";
+    std::string input_path = "data/00.txt";
+    int memory_kb = 2048;
+    uint32_t seed = 1;
+    bool show_help = false;
+};
 
-void data_preprocess();
-void read_packet_data();
+std::unordered_set<uint32_t> flow_set;
+int data_size = 0;
+int T_MEM = 2048;
+uint32_t* hash_seeds = nullptr;
+Packet* data_arr = nullptr;
+
+Options parse_args(int argc, char** argv);
+void print_usage(const char* program);
+void read_packet_data(const std::string& input_path);
 void generate_hash_seeds(int len);
-void free();
-void process_args(int argc, char** argv);
+void run_algorithm(Algorithm algorithm);
+void release_data();
 
-int data_size;
-int opt = 0;
-int T_MEM = 2048;  // total size: 2048KB
+namespace {
 
-uint32_t* hash_seeds;
-pii* data_arr;
-
-void test_vBitmap_ss() {
-    printf("===============> Test vBitmap + ss\n");
-
-    // vBitmap
-    int m = int(1.0 * 8 * 1024 * T_MEM / 2);
-    int s = 5000;
-    vBitmap vb(m, s, hash_seeds);
-
-    // ss
-    unsigned long long buf_size = 500000000;
-    int lgn = 32, cmdepth = 4, b = 79, c = 3, memory = 438;
-    int cmwidth = 1.0 * T_MEM * 1024 * 8 / 2 / cmdepth / (memory + lgn + 8);
-    DetectorSS ss(cmdepth, cmwidth, lgn, b, c, memory);
-
-    clock_t start, end;
-    double time, throughput;
-    // insert
-    start = clock();
-    for (int i = 0; i < data_size; i++) {
-        vb.insert(data_arr[i].first, data_arr[i].second);
-        ss.Update(data_arr[i].first, data_arr[i].second, 1);
+uint64_t parse_decimal(const std::string& value, const std::string& name,
+                       uint64_t maximum) {
+    if (value.empty() ||
+        !std::all_of(value.begin(), value.end(), [](unsigned char character) {
+            return character >= '0' && character <= '9';
+        })) {
+        throw std::runtime_error(name + " must be a positive integer");
     }
-    end = clock();
-    time = (double)(end - start) / CLOCKS_PER_SEC;
-    throughput = data_size * 1.0 / 1000000 / time;
-    printf("Insert throughput: %.6f Mpps\n", throughput);
 
-    // query per-flow
-    unordered_map<uint32_t, double> vb_result;
-    start = clock();
-    double sum_bits = vb.sum_bits();
-    for (const uint32_t& flow : flow_set) {
-        vb_result[flow] = vb.query_per_flow(flow, sum_bits);
+    uint64_t parsed = 0;
+    try {
+        std::size_t consumed = 0;
+        parsed = std::stoull(value, &consumed, 10);
+        if (consumed != value.size()) {
+            throw std::runtime_error(name + " must be a positive integer");
+        }
+    } catch (const std::invalid_argument&) {
+        throw std::runtime_error(name + " must be a positive integer");
+    } catch (const std::out_of_range&) {
+        throw std::runtime_error(name + " value is out of range");
     }
-    end = clock();
-    time = (double)(end - start) / CLOCKS_PER_SEC;
-    throughput = time * 1000 / flow_set.size();
-    printf("Per-flow query speed: %.6f ms\n", throughput);
+
+    if (parsed > maximum) {
+        throw std::runtime_error(name + " value is out of range");
+    }
+    return parsed;
 }
 
-void test_vBitmap_ss_rskt() {
-    printf("===============> Test vBitmap + ss + rskt\n");
-
-    // vBitmap
-    int m = int(1.0 * 8 * 1024 * T_MEM / 3);
-    int s = 5000;
-    vBitmap vb(m, s, hash_seeds);
-
-    // ss
-    unsigned long long buf_size = 500000000;
-    int lgn = 32, cmdepth = 4, b = 79, c = 3, memory = 438;
-    int cmwidth = 1.0 * 1024 * 8 * T_MEM / 3 / cmdepth / (memory + lgn + 8);
-    DetectorSS ss(cmdepth, cmwidth, lgn, b, c, memory);
-
-    // rskt
-    m = 128;
-    int HLL_size = 5;
-    int w = int(1.0 * 1024 * 8 * T_MEM / 3 / HLL_size / m / 2);
-    RSKT rskt(w, m, hash_seeds);
-
-    clock_t start, end;
-    double time, throughput;
-    // insert
-    start = clock();
-    for (int i = 0; i < data_size; i++) {
-        vb.insert(data_arr[i].first, data_arr[i].second);
-        ss.Update(data_arr[i].first, data_arr[i].second, 1);
-        rskt.insert(data_arr[i].first, data_arr[i].second);
+Algorithm parse_algorithm(const std::string& value) {
+    if (value == "unisketch") {
+        return Algorithm::kUniSketch;
     }
-    end = clock();
-    time = (double)(end - start) / CLOCKS_PER_SEC;
-    throughput = data_size * 1.0 / 1000000 / time;
-    printf("Insert throughput: %.6f Mpps\n", throughput);
-
-    // query per-flow
-    unordered_map<uint32_t, double> rskt_result;
-    start = clock();
-    double sum_bits = vb.sum_bits();
-    for (const uint32_t& flow : flow_set) {
-        rskt_result[flow] = rskt.query_per_flow(flow);
+    if (value == "vbitmap-ss") {
+        return Algorithm::kVBitmapSs;
     }
-    end = clock();
-    time = (double)(end - start) / CLOCKS_PER_SEC;
-    throughput = time * 1000 / flow_set.size();
-    printf("Per-flow query speed: %.6f ms\n", throughput);
+    if (value == "vbitmap-ss-rskt") {
+        return Algorithm::kVBitmapSsRskt;
+    }
+    if (value == "m2d") {
+        return Algorithm::kM2D;
+    }
+    if (value == "all") {
+        return Algorithm::kAll;
+    }
+    throw std::runtime_error("Unknown algorithm: " + value);
+}
+
+std::string require_value(int argc, char** argv, int* index,
+                          const std::string& option) {
+    if (*index + 1 >= argc || std::string(argv[*index + 1]).rfind("--", 0) == 0) {
+        throw std::runtime_error("Missing value for " + option);
+    }
+    ++(*index);
+    return argv[*index];
+}
+
+double elapsed_seconds(Clock::time_point start, Clock::time_point end) {
+    const double seconds = std::chrono::duration<double>(end - start).count();
+    return std::max(seconds, std::numeric_limits<double>::min());
+}
+
+void print_run_header(const std::string& algorithm_name) {
+    std::cout << "Algorithm: " << algorithm_name << '\n';
+    std::cout << "Input records: " << data_size << '\n';
+    std::cout << "Distinct flows: " << flow_set.size() << '\n';
+    std::cout << "Memory: " << T_MEM << " KiB\n";
+}
+
+void print_results(double insert_seconds, double query_seconds,
+                   double estimate_checksum) {
+    const double throughput = data_size / 1000000.0 / insert_seconds;
+    const double query_nanoseconds =
+        query_seconds * 1e9 / static_cast<double>(flow_set.size());
+
+    std::cout << std::fixed << std::setprecision(6);
+    std::cout << "Insert throughput: " << throughput << " Mpps\n";
+    std::cout << "Per-flow query time: " << query_nanoseconds << " ns\n";
+    std::cout << "Estimate checksum: " << estimate_checksum << '\n';
+}
+
+void test_vbitmap_ss() {
+    print_run_header("vbitmap-ss");
+
+    const int bitmap_length = static_cast<int>(8.0 * 1024 * T_MEM / 2);
+    const int virtual_bitmap_length = 5000;
+    vBitmap bitmap(bitmap_length, virtual_bitmap_length, hash_seeds);
+
+    const int counter_bits = 32;
+    const int depth = 4;
+    const int bitmap_bits = 79;
+    const int components = 3;
+    const int component_memory = 438;
+    const int width = static_cast<int>(
+        1.0 * T_MEM * 1024 * 8 / 2 / depth /
+        (component_memory + counter_bits + 8));
+    DetectorSS spread_sketch(depth, width, counter_bits, bitmap_bits,
+                             components, component_memory);
+
+    const auto insert_start = Clock::now();
+    for (int index = 0; index < data_size; ++index) {
+        bitmap.insert(data_arr[index].first, data_arr[index].second);
+        spread_sketch.Update(data_arr[index].first, data_arr[index].second, 1);
+    }
+    const auto insert_end = Clock::now();
+
+    double estimate_checksum = 0.0;
+    const auto query_start = Clock::now();
+    const double sum_bits = bitmap.sum_bits();
+    for (uint32_t flow : flow_set) {
+        estimate_checksum += bitmap.query_per_flow(flow, sum_bits);
+    }
+    const auto query_end = Clock::now();
+
+    print_results(elapsed_seconds(insert_start, insert_end),
+                  elapsed_seconds(query_start, query_end), estimate_checksum);
+}
+
+void test_vbitmap_ss_rskt() {
+    print_run_header("vbitmap-ss-rskt");
+
+    int bitmap_length = static_cast<int>(8.0 * 1024 * T_MEM / 3);
+    const int virtual_bitmap_length = 5000;
+    vBitmap bitmap(bitmap_length, virtual_bitmap_length, hash_seeds);
+
+    const int counter_bits = 32;
+    const int depth = 4;
+    const int bitmap_bits = 79;
+    const int components = 3;
+    const int component_memory = 438;
+    const int width = static_cast<int>(
+        1.0 * 1024 * 8 * T_MEM / 3 / depth /
+        (component_memory + counter_bits + 8));
+    DetectorSS spread_sketch(depth, width, counter_bits, bitmap_bits,
+                             components, component_memory);
+
+    bitmap_length = 128;
+    const int hll_bits = 5;
+    const int rskt_width = static_cast<int>(
+        1.0 * 1024 * 8 * T_MEM / 3 / hll_bits / bitmap_length / 2);
+    RSKT rskt(rskt_width, bitmap_length, hash_seeds);
+
+    const auto insert_start = Clock::now();
+    for (int index = 0; index < data_size; ++index) {
+        bitmap.insert(data_arr[index].first, data_arr[index].second);
+        spread_sketch.Update(data_arr[index].first, data_arr[index].second, 1);
+        rskt.insert(data_arr[index].first, data_arr[index].second);
+    }
+    const auto insert_end = Clock::now();
+
+    double estimate_checksum = 0.0;
+    const auto query_start = Clock::now();
+    for (uint32_t flow : flow_set) {
+        estimate_checksum += rskt.query_per_flow(flow);
+    }
+    const auto query_end = Clock::now();
+
+    print_results(elapsed_seconds(insert_start, insert_end),
+                  elapsed_seconds(query_start, query_end), estimate_checksum);
 }
 
 void test_m2d() {
-    printf("===============> Test M2D\n");
+    print_run_header("m2d");
 
-    // m2d
-    int hashTableMemory = 132, l = 3, heapSize = 100, d = 128;
-    double remian = T_MEM * 8 * 1024 - hashTableMemory * 8 * 1024 - heapSize * 64 * (l + 1);
-    double ps = 0.25;
-    int w = int(remian / (d * 5 + 32 * 32) / (1 + ps + ps * ps));
-    pii* dw = new pii[3]{pii(d, max(2, w)), pii(d, max(2, int(w * ps))), pii(d, max(2, int(w * ps * ps)))};
-    M2D m2(l, dw, 3, heapSize, ps, hash_seeds);
+    const int hash_table_memory = 132;
+    const int levels = 3;
+    const int heap_size = 100;
+    const int registers = 128;
+    const double remaining_bits =
+        T_MEM * 8.0 * 1024 - hash_table_memory * 8.0 * 1024 -
+        heap_size * 64.0 * (levels + 1);
+    const double sampling_probability = 0.25;
+    const int width = static_cast<int>(
+        remaining_bits / (registers * 5 + 32 * 32) /
+        (1 + sampling_probability + sampling_probability * sampling_probability));
+    Packet dimensions[3] = {
+        Packet(registers, std::max(2, width)),
+        Packet(registers,
+               std::max(2, static_cast<int>(width * sampling_probability))),
+        Packet(registers,
+               std::max(2, static_cast<int>(
+                               width * sampling_probability * sampling_probability)))};
+    M2D m2d(levels, dimensions, 3, heap_size, sampling_probability, hash_seeds);
 
-    clock_t start, end;
-    double time, throughput;
-    // insert
-    start = clock();
-    for (int i = 0; i < data_size; i++) {
-        m2.insert(data_arr[i].first, data_arr[i].second);
+    const auto insert_start = Clock::now();
+    for (int index = 0; index < data_size; ++index) {
+        m2d.insert(data_arr[index].first, data_arr[index].second);
     }
-    end = clock();
-    time = (double)(end - start) / CLOCKS_PER_SEC;
-    throughput = data_size * 1.0 / 1000000 / time;
-    printf("Insert throughput: %.6f Mpps\n", throughput);
+    const auto insert_end = Clock::now();
 
-    // query per-flow
-    unordered_map<uint32_t, double> m2_result;
-    start = clock();
-    for (const uint32_t& flow : flow_set) {
-        m2_result[flow] = m2.query_per_flow(flow);
+    double estimate_checksum = 0.0;
+    const auto query_start = Clock::now();
+    for (uint32_t flow : flow_set) {
+        estimate_checksum += m2d.query_per_flow(flow);
     }
-    end = clock();
-    time = (double)(end - start) / CLOCKS_PER_SEC;
-    throughput = time * 1000 / flow_set.size();
-    printf("Per-flow query speed: %.6f ms\n", throughput);
+    const auto query_end = Clock::now();
+
+    print_results(elapsed_seconds(insert_start, insert_end),
+                  elapsed_seconds(query_start, query_end), estimate_checksum);
 }
 
-void test_univsketch() {
-    printf("===============> Test univSketch\n");
+void test_unisketch() {
+    print_run_header("unisketch");
 
-    // univsketch
-    double register_ratio = 7, bucket_ratio = 3;
-    int l = 16, bucket_size = 4, level = 4, s = 128;
-    int m = int(1.0 * T_MEM * 1024 * 8 * (register_ratio / (register_ratio + bucket_ratio)) / l);
-    int m_ = int(1.0 * T_MEM * 1024 * 8 * (bucket_ratio / (register_ratio + bucket_ratio)) / bucket_size / (32 + 32));
-    univSketch univ(m, l, s, m_, level, bucket_size, hash_seeds);
+    const double register_ratio = 7.0;
+    const double bucket_ratio = 3.0;
+    const int register_bits = 16;
+    const int bucket_size = 4;
+    const int levels = 4;
+    const int virtual_registers = 128;
+    const int registers = static_cast<int>(
+        T_MEM * 1024.0 * 8 * (register_ratio / (register_ratio + bucket_ratio)) /
+        register_bits);
+    const int buckets = static_cast<int>(
+        T_MEM * 1024.0 * 8 * (bucket_ratio / (register_ratio + bucket_ratio)) /
+        bucket_size / (32 + 32));
+    uniSketch sketch(registers, register_bits, virtual_registers, buckets,
+                     levels, bucket_size, hash_seeds);
 
-    clock_t start, end;
-    double time, throughput;
-    // insert
-    start = clock();
-    for (int i = 0; i < data_size; i++) {
-        univ.insert(data_arr[i].first, data_arr[i].second);
+    const auto insert_start = Clock::now();
+    for (int index = 0; index < data_size; ++index) {
+        sketch.insert(data_arr[index].first, data_arr[index].second);
     }
-    end = clock();
-    time = (double)(end - start) / CLOCKS_PER_SEC;
-    throughput = data_size * 1.0 / 1000000 / time;
-    printf("Insert throughput: %.6f Mpps\n", throughput);
+    const auto insert_end = Clock::now();
 
-    // query per-flow
-    unordered_map<uint32_t, double> univ_result;
-    start = clock();
-    for (const uint32_t& flow : flow_set) {
-        univ_result[flow] = univ.query_per_flow(flow);
+    double estimate_checksum = 0.0;
+    const auto query_start = Clock::now();
+    for (uint32_t flow : flow_set) {
+        estimate_checksum += sketch.query_per_flow(flow);
     }
-    end = clock();
-    time = (double)(end - start) / CLOCKS_PER_SEC;
-    throughput = 1000 * time / flow_set.size();
-    printf("Per-flow query speed: %.6f ns\n", throughput);
+    const auto query_end = Clock::now();
+
+    print_results(elapsed_seconds(insert_start, insert_end),
+                  elapsed_seconds(query_start, query_end), estimate_checksum);
 }
+
+}  // namespace
 
 int main(int argc, char** argv) {
-    process_args(argc, argv);
-
-    generate_hash_seeds(4);
-
-    read_packet_data();
-
-    // vBitmap + ss
-    test_vBitmap_ss();
-    // vBitmap + ss + rskt
-    test_vBitmap_ss_rskt();
-    // m2d
-    test_m2d();
-    // univsketch
-    test_univsketch();
-
-    free();
-
-    return 0;
-}
-
-void read_packet_data() {
-    string path = "../data/";
-    data_set.clear();
-
-    pii temp;
-    int total = 0;
-
-    string fs[] = {"00.txt"};
-    for (string f : fs) {
-        vector<pii> data;
-        string c_path = path + f;
-        inf.open(c_path, ios::in);
-        cout << "Reading " << c_path << endl;
-        int cc = 0;
-        while (inf >> temp.second && inf >> temp.first) {
-            data.push_back({temp.first, temp.second});
-            flow_set.insert(temp.first);
-            cc += 1;
+    try {
+        const Options options = parse_args(argc, argv);
+        if (options.show_help) {
+            print_usage(argv[0]);
+            return 0;
         }
-        cout << "Read " << cc << " lines" << endl;
-        data_set.push_back(data);
-        total += cc;
-        inf.close();
-        // break;
-    }
 
-    data_size = total;
-
-    cout << "Total data size: " << total << endl;
-
-    data_preprocess();
-}
-
-void data_preprocess() {
-    data_arr = new pii[data_size];
-    memset(data_arr, 0, data_size * sizeof(pii));
-    int index = 0;
-    for (const auto& data : data_set) {
-        for (const auto& d : data) {
-            data_arr[index++] = d;
-        }
+        T_MEM = options.memory_kb;
+        std::srand(options.seed);
+        generate_hash_seeds(5);
+        read_packet_data(options.input_path);
+        run_algorithm(options.algorithm);
+        release_data();
+        return 0;
+    } catch (const std::exception& error) {
+        release_data();
+        std::cerr << "Error: " << error.what() << '\n';
+        return 1;
     }
 }
 
-void generate_hash_seeds(int len = 8) {
+Options parse_args(int argc, char** argv) {
+    Options options;
+
+    if (argc == 2 && argv[1][0] != '-') {
+        const uint64_t memory = parse_decimal(
+            argv[1], "Memory", static_cast<uint64_t>(std::numeric_limits<int>::max()));
+        if (memory == 0) {
+            throw std::runtime_error("Memory must be a positive integer");
+        }
+        options.memory_kb = static_cast<int>(memory);
+        return options;
+    }
+
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument = argv[index];
+        if (argument == "--help") {
+            options.show_help = true;
+        } else if (argument == "--algorithm") {
+            options.algorithm_name = require_value(argc, argv, &index, argument);
+            options.algorithm = parse_algorithm(options.algorithm_name);
+        } else if (argument == "--memory-kb") {
+            const std::string value = require_value(argc, argv, &index, argument);
+            const uint64_t memory = parse_decimal(
+                value, "Memory",
+                static_cast<uint64_t>(std::numeric_limits<int>::max()));
+            if (memory == 0) {
+                throw std::runtime_error("Memory must be a positive integer");
+            }
+            options.memory_kb = static_cast<int>(memory);
+        } else if (argument == "--input") {
+            options.input_path = require_value(argc, argv, &index, argument);
+        } else if (argument == "--seed") {
+            const std::string value = require_value(argc, argv, &index, argument);
+            options.seed = static_cast<uint32_t>(parse_decimal(
+                value, "Seed", std::numeric_limits<uint32_t>::max()));
+        } else {
+            throw std::runtime_error("Unknown argument: " + argument);
+        }
+    }
+
+    return options;
+}
+
+void print_usage(const char* program) {
+    std::cout
+        << "Usage:\n"
+        << "  " << program
+        << " [--algorithm NAME] [--memory-kb KIB] [--input PATH] [--seed N]\n"
+        << "  " << program << " MEMORY_KIB\n\n"
+        << "Algorithms:\n"
+        << "  unisketch\n"
+        << "  vbitmap-ss\n"
+        << "  vbitmap-ss-rskt\n"
+        << "  m2d\n"
+        << "  all\n";
+}
+
+void read_packet_data(const std::string& input_path) {
+    std::ifstream input(input_path);
+    if (!input.is_open()) {
+        throw std::runtime_error("Cannot open input file: " + input_path);
+    }
+
+    std::vector<Packet> data;
+    std::string line;
+    std::size_t line_number = 0;
+    while (std::getline(input, line)) {
+        ++line_number;
+        if (line.find_first_not_of(" \t\r\n") == std::string::npos) {
+            continue;
+        }
+
+        std::istringstream row(line);
+        std::string element_token;
+        std::string flow_token;
+        std::string extra_token;
+        if (!(row >> element_token >> flow_token) || (row >> extra_token)) {
+            throw std::runtime_error("Invalid input at line " +
+                                     std::to_string(line_number));
+        }
+
+        try {
+            const uint64_t element_id = parse_decimal(
+                element_token, "Input value", std::numeric_limits<uint32_t>::max());
+            const uint64_t flow_id = parse_decimal(
+                flow_token, "Input value", std::numeric_limits<uint32_t>::max());
+            data.push_back({static_cast<uint32_t>(flow_id),
+                            static_cast<uint32_t>(element_id)});
+            flow_set.insert(static_cast<uint32_t>(flow_id));
+        } catch (const std::runtime_error&) {
+            throw std::runtime_error("Invalid input at line " +
+                                     std::to_string(line_number));
+        }
+    }
+
+    if (data.empty()) {
+        throw std::runtime_error("Input file is empty: " + input_path);
+    }
+    if (data.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("Input contains too many records");
+    }
+
+    data_size = static_cast<int>(data.size());
+    data_arr = new Packet[data.size()];
+    std::copy(data.begin(), data.end(), data_arr);
+}
+
+void generate_hash_seeds(int len) {
     hash_seeds = new uint32_t[len];
-
+    std::unordered_set<uint32_t> unique_seeds;
     int count = 0;
-    std::unordered_set<int> diff_ele;
     while (count < len) {
-        int num = rand();
-        if (diff_ele.find(num) == diff_ele.end()) {
-            diff_ele.insert(num);
-            hash_seeds[count++] = num;
+        const uint32_t candidate = static_cast<uint32_t>(std::rand());
+        if (unique_seeds.insert(candidate).second) {
+            hash_seeds[count++] = candidate;
         }
     }
 }
 
-void process_args(int argc, char** argv) {
-    if (argc < 2) {
-        cout << "Usage: " << argv[0] << "<Memory>" << endl;
-        exit(1);
+void run_algorithm(Algorithm algorithm) {
+    switch (algorithm) {
+        case Algorithm::kUniSketch:
+            test_unisketch();
+            break;
+        case Algorithm::kVBitmapSs:
+            test_vbitmap_ss();
+            break;
+        case Algorithm::kVBitmapSsRskt:
+            test_vbitmap_ss_rskt();
+            break;
+        case Algorithm::kM2D:
+            test_m2d();
+            break;
+        case Algorithm::kAll:
+            test_unisketch();
+            test_vbitmap_ss();
+            test_vbitmap_ss_rskt();
+            test_m2d();
+            break;
     }
-
-    T_MEM = atoi(argv[1]);
-
-    printf("Memory: %d\n", T_MEM);
 }
 
-void free() {
+void release_data() {
     delete[] data_arr;
+    data_arr = nullptr;
     delete[] hash_seeds;
+    hash_seeds = nullptr;
+    flow_set.clear();
+    data_size = 0;
 }

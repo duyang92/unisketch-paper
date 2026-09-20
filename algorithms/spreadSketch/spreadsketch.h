@@ -114,7 +114,7 @@ class DetectorSS {
 };
 
 DetectorSS::DetectorSS() {
-    // 构造函数的实现
+    // Constructor implementation.
 }
 
 DetectorSS::DetectorSS(int depth, int width, int lgn, int b, int c, int memory, int round) {
