@@ -78,7 +78,8 @@ make run-minimal
 The first command creates `build/unisketch`. The second runs UniSketch with a
 2,048 KiB memory budget, seed `1`, SSD threshold `100`, and the bundled input.
 
-For a quick check of UniSketch and every included baseline:
+For a quick check of UniSketch and every included baseline, using SSD threshold
+`3` so that the first 1,000 records include positive examples:
 
 ```bash
 make smoke-test
@@ -155,7 +156,7 @@ are therefore outside the bundled single-period example.
 
 ## Reference Results
 
-The following configuration is used by all three scripts:
+The following configuration is used by `make run-minimal` and `make run-all`:
 
 ```text
 Memory: 2048 KiB
@@ -173,9 +174,26 @@ exactly:
 | Distinct flows | 161473 |
 | Actual super-spreaders | 1366 |
 
-The algorithm-dependent reference values for Ubuntu 22.04 and G++ 11.4 are to
-be copied here from a clean `make run-all` execution before the updated
-artifact is released.
+Reference results from a clean x86-64 run with G++ 13.3.0 (the counts should
+match exactly; allow small floating-point differences across compilers):
+
+| Algorithm | Estimate checksum | PFSE MRE | Reported / TP / FP / FN | SSD precision | SSD recall | SSD F1-score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `unisketch` | 913308.955760 | 0.183453 | 1375 / 1324 / 51 / 42 | 0.962909 | 0.969253 | 0.966071 |
+| `vbitmap-ss` | 2291631.709779 | 7.654162 | 1382 / 1196 / 186 / 170 | 0.865412 | 0.875549 | 0.870451 |
+| `vbitmap-ss-rskt` | 2662286.075291 | 9.559185 | 1594 / 1060 / 534 / 306 | 0.664994 | 0.775988 | 0.716216 |
+| `m2d` | 8739769.767945 | 40.941159 | 87 / 64 / 23 / 1302 | 0.735632 | 0.046852 | 0.088094 |
+
+`make smoke-test` uses the first 1,000 records with the same memory and seed,
+but SSD threshold `3`. It should report 796 distinct flows and 43 actual
+super-spreaders. Its reference outputs are:
+
+| Algorithm | Estimate checksum | PFSE MRE | Reported / TP | SSD F1-score |
+| --- | ---: | ---: | ---: | ---: |
+| `unisketch` | 1046.423106 | 0.067881 | 41 / 41 | 0.976190 |
+| `vbitmap-ss` | 1225.990357 | 0.312395 | 39 / 39 | 0.951220 |
+| `vbitmap-ss-rskt` | 1262.100542 | 0.362564 | 39 / 39 | 0.951220 |
+| `m2d` | 828.254269 | 0.076036 | 4 / 4 | 0.170213 |
 
 ## Evaluation Workflows
 
@@ -184,7 +202,7 @@ The repository provides four main workflows:
 ```bash
 make all          # Build build/unisketch.
 make run-minimal  # Run the primary UniSketch Functional example.
-make smoke-test   # Run every algorithm on 1,000 input records.
+make smoke-test   # Run every algorithm on 1,000 records, SSD threshold 3.
 make run-all      # Run every algorithm on the complete bundled input.
 ```
 
@@ -193,8 +211,9 @@ verifies that all software modes can execute with a small temporary subset.
 `make run-all` is optional for Functional review and takes substantially longer
 because it evaluates every baseline on all 907,463 records.
 
-All three workflows pass `--ssd-threshold 100` explicitly. To evaluate another
-threshold, invoke the executable directly as shown below.
+`run-minimal` and `run-all` use SSD threshold `100`, while `smoke-test` uses
+`3`. To evaluate another threshold, invoke the executable directly as shown
+below.
 
 Run the automated software regression suite with:
 
@@ -295,11 +314,11 @@ given in KiB, but total process memory is higher because the driver loads the
 input and maintains the distinct-flow set in memory.
 
 With the executable already built, the following measurements were observed on
-the Xeon W-2295 host documented above:
+an Intel Xeon Platinum 8573C host with Ubuntu 24.04 and G++ 13.3.0:
 
-- `make run-minimal`: approximately 1.08 seconds elapsed and 23,604 KiB peak
+- `make run-minimal`: approximately 1.3 seconds elapsed and 35,772 KiB peak
   resident memory.
-- `make run-all`: approximately 41.12 seconds elapsed and 53,044 KiB peak
+- `make run-all`: approximately 28.5 seconds elapsed and 67,224 KiB peak
   resident memory.
 
 These values are guidance, not performance guarantees. They vary with the host,
