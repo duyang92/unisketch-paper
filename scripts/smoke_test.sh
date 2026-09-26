@@ -14,4 +14,4 @@ test "$(wc -l <"${smoke_input}")" -eq 1000
   --memory-kb 2048 \
   --input "${smoke_input}" \
   --seed 1 \
-  --ssd-threshold 100
+  --ssd-threshold 3
