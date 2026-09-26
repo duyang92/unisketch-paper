@@ -11,7 +11,7 @@ outside_dir="$(mktemp -d)"
 trap 'rm -rf "${outside_dir}"' EXIT
 (
   cd "${outside_dir}"
-  "${repo_root}/scripts/smoke_test.sh"
+  "${repo_root}/scripts/run_minimal.sh"
 )
 
 make -C "${repo_root}" test

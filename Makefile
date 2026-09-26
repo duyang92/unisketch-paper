@@ -5,7 +5,7 @@ TARGET := build/unisketch
 SOURCES := simulation/main.cpp utils/MurmurHash3.cpp
 HEADERS := $(shell find algorithms utils -type f -name '*.h' -print)
 
-.PHONY: all test run-minimal smoke-test run-all clean
+.PHONY: all test run-minimal run-all clean
 
 all: $(TARGET)
 
@@ -19,9 +19,6 @@ test: all
 
 run-minimal: all
 	./scripts/run_minimal.sh
-
-smoke-test: all
-	./scripts/smoke_test.sh
 
 run-all: all
 	./scripts/run_all.sh

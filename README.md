@@ -29,7 +29,7 @@ functional testing with the supplied example input.
 - `data/00.txt`: the bundled example input.
 - `hardware/UniSketch.p4`: the P4_16 data-plane implementation.
 - `utils/`: shared data structures and the public-domain MurmurHash3 code.
-- `scripts/`: minimal, smoke-test, and all-algorithm workflows.
+- `scripts/`: minimal and all-algorithm workflows.
 - `tests/`: CLI, sanitizer, workflow, and packaging checks.
 
 ## Requirements
@@ -78,15 +78,10 @@ make run-minimal
 The first command creates `build/unisketch`. The second runs UniSketch with a
 2,048 KiB memory budget, seed `1`, SSD threshold `100`, and the bundled input.
 
-For a quick check of UniSketch and every included baseline:
-
-```bash
-make smoke-test
-```
-
 ## Expected Output
 
-Each selected algorithm prints a result block with the following fields:
+`make run-minimal` prints the following result for the bundled input, 2,048 KiB,
+seed `1`, and SSD threshold `100`:
 
 ```text
 Algorithm: unisketch
@@ -95,17 +90,17 @@ Distinct flows: 161473
 Memory: 2048 KiB
 Insert throughput: <machine-dependent value> Mpps
 Per-flow query time: <machine-dependent value> ns
-Estimate checksum: <algorithm-dependent value>
-PFSE MRE: <algorithm-dependent value>
+Estimate checksum: 913308.955760
+PFSE MRE: 0.183453
 SSD threshold: 100
 Actual super-spreaders: 1366
-Reported super-spreaders: <algorithm-dependent value>
-SSD true positives: <algorithm-dependent value>
-SSD false positives: <algorithm-dependent value>
-SSD false negatives: <algorithm-dependent value>
-SSD precision: <algorithm-dependent value>
-SSD recall: <algorithm-dependent value>
-SSD F1-score: <algorithm-dependent value>
+Reported super-spreaders: 1375
+SSD true positives: 1324
+SSD false positives: 51
+SSD false negatives: 42
+SSD precision: 0.962909
+SSD recall: 0.969253
+SSD F1-score: 0.966071
 ```
 
 Throughput and query time depend on the processor, compiler, system load, and
@@ -114,11 +109,10 @@ record count, distinct-flow count, threshold, and actual-super-spreader count
 shown above are exact reference values. A different value for any of these four
 fields indicates that the input or ground-truth configuration differs.
 
-`Estimate checksum` makes the PFSE query phase visible and prevents a benchmark
-run from reporting only timing information. PFSE MRE is finite and
-non-negative; SSD precision, recall, and F1-score are in `[0, 1]`. The exact
-algorithm-dependent reference values for the documented Ubuntu/G++ environment
-are listed in [Reference Results](#reference-results).
+`Estimate checksum` makes the PFSE query phase visible. Allow small
+floating-point differences across compilers; the record, flow, and SSD count
+fields should match exactly. Reference values for every baseline are listed in
+[Reference Results](#reference-results).
 
 ## Evaluated Tasks and Metrics
 
@@ -155,7 +149,7 @@ are therefore outside the bundled single-period example.
 
 ## Reference Results
 
-The following configuration is used by all three scripts:
+The following configuration is used by `make run-minimal` and `make run-all`:
 
 ```text
 Memory: 2048 KiB
@@ -173,28 +167,32 @@ exactly:
 | Distinct flows | 161473 |
 | Actual super-spreaders | 1366 |
 
-The algorithm-dependent reference values for Ubuntu 22.04 and G++ 11.4 are to
-be copied here from a clean `make run-all` execution before the updated
-artifact is released.
+Reference results from a clean x86-64 run with G++ 13.3.0 (the counts should
+match exactly; allow small floating-point differences across compilers):
+
+| Algorithm | Estimate checksum | PFSE MRE | Reported / TP / FP / FN | SSD precision | SSD recall | SSD F1-score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `unisketch` | 913308.955760 | 0.183453 | 1375 / 1324 / 51 / 42 | 0.962909 | 0.969253 | 0.966071 |
+| `vbitmap-ss` | 2291631.709779 | 7.654162 | 1382 / 1196 / 186 / 170 | 0.865412 | 0.875549 | 0.870451 |
+| `vbitmap-ss-rskt` | 2662286.075291 | 9.559185 | 1594 / 1060 / 534 / 306 | 0.664994 | 0.775988 | 0.716216 |
+| `m2d` | 8739769.767945 | 40.941159 | 87 / 64 / 23 / 1302 | 0.735632 | 0.046852 | 0.088094 |
 
 ## Evaluation Workflows
 
-The repository provides four main workflows:
+The repository provides these build and evaluation workflows:
 
 ```bash
 make all          # Build build/unisketch.
 make run-minimal  # Run the primary UniSketch Functional example.
-make smoke-test   # Run every algorithm on 1,000 input records.
 make run-all      # Run every algorithm on the complete bundled input.
 ```
 
-`make run-minimal` is the recommended kick-the-tires path. `make smoke-test`
-verifies that all software modes can execute with a small temporary subset.
-`make run-all` is optional for Functional review and takes substantially longer
+`make run-minimal` is the recommended kick-the-tires path. `make run-all`
+verifies every software mode and takes substantially longer
 because it evaluates every baseline on all 907,463 records.
 
-All three workflows pass `--ssd-threshold 100` explicitly. To evaluate another
-threshold, invoke the executable directly as shown below.
+Both workflows use SSD threshold `100`. To evaluate another threshold, invoke
+the executable directly as shown below.
 
 Run the automated software regression suite with:
 
@@ -295,11 +293,11 @@ given in KiB, but total process memory is higher because the driver loads the
 input and maintains the distinct-flow set in memory.
 
 With the executable already built, the following measurements were observed on
-the Xeon W-2295 host documented above:
+an Intel Xeon Platinum 8573C host with Ubuntu 24.04 and G++ 13.3.0:
 
-- `make run-minimal`: approximately 1.08 seconds elapsed and 23,604 KiB peak
+- `make run-minimal`: approximately 1.3 seconds elapsed and 35,772 KiB peak
   resident memory.
-- `make run-all`: approximately 41.12 seconds elapsed and 53,044 KiB peak
+- `make run-all`: approximately 28.5 seconds elapsed and 67,224 KiB peak
   resident memory.
 
 These values are guidance, not performance guarantees. They vary with the host,
