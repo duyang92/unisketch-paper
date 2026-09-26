@@ -154,7 +154,7 @@ SsdMetrics compute_ssd_metrics(const EstimateMap& candidates) {
 
     std::unordered_set<uint32_t> reported_super_spreaders;
     for (const auto& [flow, estimated_spread] : candidates) {
-        if (flow != 0 && estimated_spread >= SSD_THRESHOLD) {
+        if (estimated_spread >= SSD_THRESHOLD) {
             reported_super_spreaders.insert(flow);
         }
     }
