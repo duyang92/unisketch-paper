@@ -76,7 +76,7 @@ make run-minimal
 ```
 
 The first command creates `build/unisketch`. The second runs UniSketch with a
-2,048 KiB memory budget, seed `1`, and the bundled input.
+2,048 KiB memory budget, seed `1`, SSD threshold `100`, and the bundled input.
 
 For a quick check of UniSketch and every included baseline:
 
@@ -91,16 +91,91 @@ Each selected algorithm prints a result block with the following fields:
 ```text
 Algorithm: unisketch
 Input records: 907463
-Distinct flows: <number of flow identifiers>
+Distinct flows: 161473
 Memory: 2048 KiB
 Insert throughput: <machine-dependent value> Mpps
 Per-flow query time: <machine-dependent value> ns
-Estimate checksum: <computed value>
+Estimate checksum: <algorithm-dependent value>
+PFSE MRE: <algorithm-dependent value>
+SSD threshold: 100
+Actual super-spreaders: 1366
+Reported super-spreaders: <algorithm-dependent value>
+SSD true positives: <algorithm-dependent value>
+SSD false positives: <algorithm-dependent value>
+SSD false negatives: <algorithm-dependent value>
+SSD precision: <algorithm-dependent value>
+SSD recall: <algorithm-dependent value>
+SSD F1-score: <algorithm-dependent value>
 ```
 
 Throughput and query time depend on the processor, compiler, system load, and
-power-management settings. `Estimate checksum` makes the query phase visible
-and prevents a benchmark run from reporting only timing information.
+power-management settings. For the bundled input and threshold `100`, the input
+record count, distinct-flow count, threshold, and actual-super-spreader count
+shown above are exact reference values. A different value for any of these four
+fields indicates that the input or ground-truth configuration differs.
+
+`Estimate checksum` makes the PFSE query phase visible and prevents a benchmark
+run from reporting only timing information. PFSE MRE is finite and
+non-negative; SSD precision, recall, and F1-score are in `[0, 1]`. The exact
+algorithm-dependent reference values for the documented Ubuntu/G++ environment
+are listed in [Reference Results](#reference-results).
+
+## Evaluated Tasks and Metrics
+
+The bundled data contains one measurement period, so the executable evaluation
+covers only these two tasks:
+
+- **Per-flow spread estimation (PFSE).** For each flow, ground truth is the
+  number of distinct elements in the input. The reported mean relative error is
+  `mean(abs(actual - estimate) / actual)` over all input flows.
+- **Super-spreader detection (SSD).** A flow is an actual super-spreader when
+  its ground-truth spread is greater than or equal to `--ssd-threshold`. A flow
+  is reported when its candidate estimate meets the same threshold. The driver
+  reports precision, recall, and their harmonic mean (F1-score), together with
+  the underlying actual, reported, true-positive, false-positive, and
+  false-negative counts.
+
+Repeated copies of the same `(flow_id, element_id)` pair count once in the
+ground truth. If either the actual or reported SSD set is empty, its
+corresponding precision or recall is reported as zero; F1 is zero when
+precision plus recall is zero.
+
+The algorithm modes use the following components for these tasks:
+
+| Mode | PFSE estimate | SSD candidates |
+| --- | --- | --- |
+| `unisketch` | UniSketch per-flow query | UniSketch heavy part |
+| `vbitmap-ss` | vBitmap | SpreadSketch |
+| `vbitmap-ss-rskt` | vBitmap | SpreadSketch |
+| `m2d` | M2D per-flow query | M2D heaps |
+
+RSKT remains active in the insertion path of `vbitmap-ss-rskt`, but it is not
+used for PFSE or SSD. KPSE and HSCD require multiple measurement periods and
+are therefore outside the bundled single-period example.
+
+## Reference Results
+
+The following configuration is used by all three scripts:
+
+```text
+Memory: 2048 KiB
+Seed: 1
+SSD threshold: 100
+Input: data/00.txt
+```
+
+For `make run-minimal` and `make run-all`, these ground-truth values must match
+exactly:
+
+| Field | Expected value |
+| --- | ---: |
+| Input records | 907463 |
+| Distinct flows | 161473 |
+| Actual super-spreaders | 1366 |
+
+The algorithm-dependent reference values for Ubuntu 22.04 and G++ 11.4 are to
+be copied here from a clean `make run-all` execution before the updated
+artifact is released.
 
 ## Evaluation Workflows
 
@@ -117,6 +192,9 @@ make run-all      # Run every algorithm on the complete bundled input.
 verifies that all software modes can execute with a small temporary subset.
 `make run-all` is optional for Functional review and takes substantially longer
 because it evaluates every baseline on all 907,463 records.
+
+All three workflows pass `--ssd-threshold 100` explicitly. To evaluate another
+threshold, invoke the executable directly as shown below.
 
 Run the automated software regression suite with:
 
@@ -142,7 +220,8 @@ The canonical interface is:
   --algorithm unisketch \
   --memory-kb 2048 \
   --input data/00.txt \
-  --seed 1
+  --seed 1 \
+  --ssd-threshold 100
 ```
 
 Supported algorithm names are:
@@ -167,8 +246,8 @@ uses the default algorithm, input path, and seed:
 ```
 
 Invalid algorithms, missing option values, invalid memory sizes, unavailable
-input files, empty inputs, and malformed rows produce an English diagnostic on
-standard error and a nonzero exit status.
+input files, empty inputs, zero or invalid SSD thresholds, and malformed rows
+produce an English diagnostic on standard error and a nonzero exit status.
 
 ## Input Data
 
@@ -190,7 +269,7 @@ format above and pass its path explicitly:
 
 ```bash
 ./build/unisketch --algorithm all --memory-kb 4096 \
-  --input /path/to/input.txt --seed 7
+  --input /path/to/input.txt --seed 7 --ssd-threshold 100
 ```
 
 The public headers under `algorithms/` contain the sketch classes used by the

@@ -7,4 +7,5 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   --algorithm all \
   --memory-kb 2048 \
   --input "${repo_root}/data/00.txt" \
-  --seed 1
+  --seed 1 \
+  --ssd-threshold 100

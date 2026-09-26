@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -9,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -36,12 +38,26 @@ struct Options {
     std::string input_path = "data/00.txt";
     int memory_kb = 2048;
     uint32_t seed = 1;
+    uint32_t ssd_threshold = 100;
     bool show_help = false;
 };
 
+using EstimateMap = std::unordered_map<uint32_t, double>;
+
+struct SsdMetrics {
+    std::size_t actual = 0;
+    std::size_t reported = 0;
+    std::size_t true_positives = 0;
+    double precision = 0.0;
+    double recall = 0.0;
+    double f1_score = 0.0;
+};
+
 std::unordered_set<uint32_t> flow_set;
+std::unordered_map<uint32_t, uint32_t> actual_spreads;
 int data_size = 0;
 int T_MEM = 2048;
+uint32_t SSD_THRESHOLD = 100;
 uint32_t* hash_seeds = nullptr;
 Packet* data_arr = nullptr;
 
@@ -115,6 +131,58 @@ double elapsed_seconds(Clock::time_point start, Clock::time_point end) {
     return std::max(seconds, std::numeric_limits<double>::min());
 }
 
+double compute_mre(const EstimateMap& estimates) {
+    double relative_error_sum = 0.0;
+    for (const auto& [flow, actual_spread] : actual_spreads) {
+        const auto estimate = estimates.find(flow);
+        const double estimated_spread =
+            estimate == estimates.end() ? 0.0 : estimate->second;
+        relative_error_sum +=
+            std::abs(static_cast<double>(actual_spread) - estimated_spread) /
+            static_cast<double>(actual_spread);
+    }
+    return relative_error_sum / static_cast<double>(actual_spreads.size());
+}
+
+SsdMetrics compute_ssd_metrics(const EstimateMap& candidates) {
+    std::unordered_set<uint32_t> actual_super_spreaders;
+    for (const auto& [flow, actual_spread] : actual_spreads) {
+        if (actual_spread >= SSD_THRESHOLD) {
+            actual_super_spreaders.insert(flow);
+        }
+    }
+
+    std::unordered_set<uint32_t> reported_super_spreaders;
+    for (const auto& [flow, estimated_spread] : candidates) {
+        if (flow != 0 && estimated_spread >= SSD_THRESHOLD) {
+            reported_super_spreaders.insert(flow);
+        }
+    }
+
+    SsdMetrics metrics;
+    metrics.actual = actual_super_spreaders.size();
+    metrics.reported = reported_super_spreaders.size();
+    for (uint32_t flow : reported_super_spreaders) {
+        if (actual_super_spreaders.find(flow) != actual_super_spreaders.end()) {
+            ++metrics.true_positives;
+        }
+    }
+
+    if (metrics.reported != 0) {
+        metrics.precision = static_cast<double>(metrics.true_positives) /
+                            static_cast<double>(metrics.reported);
+    }
+    if (metrics.actual != 0) {
+        metrics.recall = static_cast<double>(metrics.true_positives) /
+                         static_cast<double>(metrics.actual);
+    }
+    if (metrics.precision + metrics.recall != 0.0) {
+        metrics.f1_score = 2.0 * metrics.precision * metrics.recall /
+                           (metrics.precision + metrics.recall);
+    }
+    return metrics;
+}
+
 void print_run_header(const std::string& algorithm_name) {
     std::cout << "Algorithm: " << algorithm_name << '\n';
     std::cout << "Input records: " << data_size << '\n';
@@ -123,7 +191,8 @@ void print_run_header(const std::string& algorithm_name) {
 }
 
 void print_results(double insert_seconds, double query_seconds,
-                   double estimate_checksum) {
+                   double estimate_checksum, const EstimateMap& estimates,
+                   const EstimateMap& ssd_candidates) {
     const double throughput = data_size / 1000000.0 / insert_seconds;
     const double query_nanoseconds =
         query_seconds * 1e9 / static_cast<double>(flow_set.size());
@@ -132,6 +201,22 @@ void print_results(double insert_seconds, double query_seconds,
     std::cout << "Insert throughput: " << throughput << " Mpps\n";
     std::cout << "Per-flow query time: " << query_nanoseconds << " ns\n";
     std::cout << "Estimate checksum: " << estimate_checksum << '\n';
+
+    const SsdMetrics ssd_metrics = compute_ssd_metrics(ssd_candidates);
+    const std::size_t false_positives =
+        ssd_metrics.reported - ssd_metrics.true_positives;
+    const std::size_t false_negatives =
+        ssd_metrics.actual - ssd_metrics.true_positives;
+    std::cout << "PFSE MRE: " << compute_mre(estimates) << '\n';
+    std::cout << "SSD threshold: " << SSD_THRESHOLD << '\n';
+    std::cout << "Actual super-spreaders: " << ssd_metrics.actual << '\n';
+    std::cout << "Reported super-spreaders: " << ssd_metrics.reported << '\n';
+    std::cout << "SSD true positives: " << ssd_metrics.true_positives << '\n';
+    std::cout << "SSD false positives: " << false_positives << '\n';
+    std::cout << "SSD false negatives: " << false_negatives << '\n';
+    std::cout << "SSD precision: " << ssd_metrics.precision << '\n';
+    std::cout << "SSD recall: " << ssd_metrics.recall << '\n';
+    std::cout << "SSD F1-score: " << ssd_metrics.f1_score << '\n';
 }
 
 void test_vbitmap_ss() {
@@ -160,15 +245,27 @@ void test_vbitmap_ss() {
     const auto insert_end = Clock::now();
 
     double estimate_checksum = 0.0;
+    EstimateMap estimates;
+    estimates.reserve(flow_set.size());
     const auto query_start = Clock::now();
     const double sum_bits = bitmap.sum_bits();
     for (uint32_t flow : flow_set) {
-        estimate_checksum += bitmap.query_per_flow(flow, sum_bits);
+        const double estimate = bitmap.query_per_flow(flow, sum_bits);
+        estimates.emplace(flow, estimate);
+        estimate_checksum += estimate;
     }
     const auto query_end = Clock::now();
 
+    std::vector<std::pair<key_tp, val_tp>> detected_super_spreaders;
+    spread_sketch.Query(SSD_THRESHOLD, detected_super_spreaders);
+    EstimateMap ssd_candidates;
+    for (const auto& [flow, estimate] : detected_super_spreaders) {
+        ssd_candidates[flow] = estimate;
+    }
+
     print_results(elapsed_seconds(insert_start, insert_end),
-                  elapsed_seconds(query_start, query_end), estimate_checksum);
+                  elapsed_seconds(query_start, query_end), estimate_checksum,
+                  estimates, ssd_candidates);
 }
 
 void test_vbitmap_ss_rskt() {
@@ -204,14 +301,27 @@ void test_vbitmap_ss_rskt() {
     const auto insert_end = Clock::now();
 
     double estimate_checksum = 0.0;
+    EstimateMap estimates;
+    estimates.reserve(flow_set.size());
     const auto query_start = Clock::now();
+    const double sum_bits = bitmap.sum_bits();
     for (uint32_t flow : flow_set) {
-        estimate_checksum += rskt.query_per_flow(flow);
+        const double estimate = bitmap.query_per_flow(flow, sum_bits);
+        estimates.emplace(flow, estimate);
+        estimate_checksum += estimate;
     }
     const auto query_end = Clock::now();
 
+    std::vector<std::pair<key_tp, val_tp>> detected_super_spreaders;
+    spread_sketch.Query(SSD_THRESHOLD, detected_super_spreaders);
+    EstimateMap ssd_candidates;
+    for (const auto& [flow, estimate] : detected_super_spreaders) {
+        ssd_candidates[flow] = estimate;
+    }
+
     print_results(elapsed_seconds(insert_start, insert_end),
-                  elapsed_seconds(query_start, query_end), estimate_checksum);
+                  elapsed_seconds(query_start, query_end), estimate_checksum,
+                  estimates, ssd_candidates);
 }
 
 void test_m2d() {
@@ -244,14 +354,20 @@ void test_m2d() {
     const auto insert_end = Clock::now();
 
     double estimate_checksum = 0.0;
+    EstimateMap estimates;
+    estimates.reserve(flow_set.size());
     const auto query_start = Clock::now();
     for (uint32_t flow : flow_set) {
-        estimate_checksum += m2d.query_per_flow(flow);
+        const double estimate = m2d.query_per_flow(flow);
+        estimates.emplace(flow, estimate);
+        estimate_checksum += estimate;
     }
     const auto query_end = Clock::now();
+    const EstimateMap ssd_candidates = m2d.query_top_k();
 
     print_results(elapsed_seconds(insert_start, insert_end),
-                  elapsed_seconds(query_start, query_end), estimate_checksum);
+                  elapsed_seconds(query_start, query_end), estimate_checksum,
+                  estimates, ssd_candidates);
 }
 
 void test_unisketch() {
@@ -279,14 +395,20 @@ void test_unisketch() {
     const auto insert_end = Clock::now();
 
     double estimate_checksum = 0.0;
+    EstimateMap estimates;
+    estimates.reserve(flow_set.size());
     const auto query_start = Clock::now();
     for (uint32_t flow : flow_set) {
-        estimate_checksum += sketch.query_per_flow(flow);
+        const double estimate = sketch.query_per_flow(flow);
+        estimates.emplace(flow, estimate);
+        estimate_checksum += estimate;
     }
     const auto query_end = Clock::now();
+    const EstimateMap ssd_candidates = sketch.query_top_k();
 
     print_results(elapsed_seconds(insert_start, insert_end),
-                  elapsed_seconds(query_start, query_end), estimate_checksum);
+                  elapsed_seconds(query_start, query_end), estimate_checksum,
+                  estimates, ssd_candidates);
 }
 
 }  // namespace
@@ -300,6 +422,7 @@ int main(int argc, char** argv) {
         }
 
         T_MEM = options.memory_kb;
+        SSD_THRESHOLD = options.ssd_threshold;
         std::srand(options.seed);
         generate_hash_seeds(5);
         read_packet_data(options.input_path);
@@ -348,6 +471,15 @@ Options parse_args(int argc, char** argv) {
             const std::string value = require_value(argc, argv, &index, argument);
             options.seed = static_cast<uint32_t>(parse_decimal(
                 value, "Seed", std::numeric_limits<uint32_t>::max()));
+        } else if (argument == "--ssd-threshold") {
+            const std::string value = require_value(argc, argv, &index, argument);
+            const uint64_t threshold = parse_decimal(
+                value, "SSD threshold", std::numeric_limits<uint32_t>::max());
+            if (threshold == 0) {
+                throw std::runtime_error(
+                    "SSD threshold must be a positive integer");
+            }
+            options.ssd_threshold = static_cast<uint32_t>(threshold);
         } else {
             throw std::runtime_error("Unknown argument: " + argument);
         }
@@ -360,7 +492,8 @@ void print_usage(const char* program) {
     std::cout
         << "Usage:\n"
         << "  " << program
-        << " [--algorithm NAME] [--memory-kb KIB] [--input PATH] [--seed N]\n"
+        << " [--algorithm NAME] [--memory-kb KIB] [--input PATH] [--seed N]"
+           " [--ssd-threshold N]\n"
         << "  " << program << " MEMORY_KIB\n\n"
         << "Algorithms:\n"
         << "  unisketch\n"
@@ -415,6 +548,15 @@ void read_packet_data(const std::string& input_path) {
         throw std::runtime_error("Input contains too many records");
     }
 
+    std::vector<Packet> unique_pairs = data;
+    std::sort(unique_pairs.begin(), unique_pairs.end());
+    unique_pairs.erase(std::unique(unique_pairs.begin(), unique_pairs.end()),
+                       unique_pairs.end());
+    actual_spreads.reserve(flow_set.size());
+    for (const Packet& packet : unique_pairs) {
+        ++actual_spreads[packet.first];
+    }
+
     data_size = static_cast<int>(data.size());
     data_arr = new Packet[data.size()];
     std::copy(data.begin(), data.end(), data_arr);
@@ -461,5 +603,6 @@ void release_data() {
     delete[] hash_seeds;
     hash_seeds = nullptr;
     flow_set.clear();
+    actual_spreads.clear();
     data_size = 0;
 }

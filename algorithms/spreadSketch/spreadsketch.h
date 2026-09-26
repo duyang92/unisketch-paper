@@ -387,7 +387,7 @@ int DetectorSS::PointQueryMerge(uint32_t key) {
         Intersec(mcount, ss_.counts[i], bucket * ss_.offsets[ss_.c], ss_.offsets[ss_.c]);
     }
     ret = Estimate(0, mcount);
-    delete mcount;
+    delete[] mcount;
     return ret;
 }
 
