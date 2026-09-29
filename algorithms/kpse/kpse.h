@@ -1,9 +1,12 @@
 #ifndef KPSE_H
 #define KPSE_H
 
+#include <algorithm>
 #include <utility>
 #include <string.h>
 #include <cmath>
+#include <stdexcept>
+#include <vector>
 
 #include "../../utils/MurmurHash3.h"
 
@@ -26,30 +29,28 @@ class CALC_KPSE {
         this->m = m;
         this->bitmaps = bitmaps;
 
-        uint32_t len_bitmap = std::ceil(float(m) / float(8));
-
         this->V = new double[t + 1];
         memset(this->V, 0, (t + 1) * sizeof(double));
     }
 
+    CALC_KPSE(const CALC_KPSE&) = delete;
+    CALC_KPSE& operator=(const CALC_KPSE&) = delete;
+
     ~CALC_KPSE() {
+        delete[] this->V;
     }
 
     double C(int y, int x) {
-        if (x == 0 && x == y) {
-            return 1;
+        if (x < 0 || x > y) {
+            return 0.0;
         }
-
-        uint32_t res = 1;
-        for (uint32_t i = y; i > y - x; i--) {
-            res *= i;
+        x = std::min(x, y - x);
+        long double result = 1.0;
+        for (int i = 1; i <= x; ++i) {
+            result *= static_cast<long double>(y - x + i);
+            result /= static_cast<long double>(i);
         }
-
-        for (uint32_t i = x; i > 0; i--) {
-            res /= i;
-        }
-
-        return res;
+        return static_cast<double>(result);
     }
 
     void sum_bitmaps() {
@@ -77,13 +78,14 @@ class CALC_KPSE {
     }
 
     double total_kps() {
+        if (!(V[0] > 0.0 && V[0] <= 1.0)) {
+            throw std::runtime_error("KPSE virtual bitmap is saturated");
+        }
         double N = log(V[0]) / log(1 - 1.0 / m);
 
-        double* nl = new double[k];
-        memset(nl, 0, k * sizeof(double));
+        std::vector<double> nl(k, 0.0);
 
-        double* prj = new double[k];
-        memset(prj, 0, k * sizeof(double));
+        std::vector<double> prj(k, 0.0);
         prj[0] = V[0];
 
         // printf("N: %.3f\n", N);
@@ -120,6 +122,9 @@ class CALC_KPSE {
         for (int j = 1; j <= k - 1; j++) {
             n -= nl[j];
         }
+        if (!std::isfinite(n)) {
+            throw std::runtime_error("KPSE estimate is not finite");
+        }
         return n;
     }
 };
@@ -140,7 +145,8 @@ class KPSE {
         this->m = m;
         this->u = u;
 
-        uint32_t len_bitmap = std::ceil(float(u) / float(8));
+        uint32_t len_bitmap = static_cast<uint32_t>(
+            (static_cast<uint64_t>(u) + 7) / 8);
 
         this->bitmaps = new uint8_t*[t];
         for (int i = 0; i < t; i++) {
@@ -149,7 +155,13 @@ class KPSE {
         }
     }
 
+    KPSE(const KPSE&) = delete;
+    KPSE& operator=(const KPSE&) = delete;
+
     ~KPSE() {
+        for (int i = 0; i < t; i++) {
+            delete[] this->bitmaps[i];
+        }
         delete[] this->bitmaps;
     }
 
@@ -170,7 +182,7 @@ class KPSE {
 
     void get_bitmaps(uint32_t f, uint8_t** flow) {
         for (int i = 0; i < t; i++) {
-            for (int j = 0; j < m; j++) {
+            for (uint32_t j = 0; j < m; j++) {
                 uint32_t idx1 = j / 8;
                 uint32_t idx2 = j % 8;
 

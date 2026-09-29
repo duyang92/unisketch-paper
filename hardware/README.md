@@ -13,6 +13,13 @@ program was developed with Intel P4 SDE 9.2.0.
 The SDE, switch, traffic generator, and lab topology are not distributed with
 this artifact. The software artifact does not emulate Tofino.
 
+An evaluator without the proprietary SDK or switch can follow the setup
+guidance in the [p4c repository](https://github.com/p4lang/p4c) to install the
+open-source compiler and its dependencies, and then use that software
+environment to compile and inspect the P4 source. Actual execution and
+functional testing of this Tofino-targeted program still require the real
+hardware environment.
+
 ## Architecture Selection
 
 The source selects the architecture include at compile time:

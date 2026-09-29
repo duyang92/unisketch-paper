@@ -3,9 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-"${repo_root}/build/unisketch" \
-  --algorithm all \
-  --memory-kb 2048 \
-  --input "${repo_root}/data/00.txt" \
-  --seed 1 \
-  --ssd-threshold 100
+source "${repo_root}/scripts/validate_period_inputs.sh"
+validate_period_inputs
+
+bash "${repo_root}/scripts/run_single.sh"
+bash "${repo_root}/scripts/run_multi.sh"

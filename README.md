@@ -26,10 +26,11 @@ functional testing with the supplied example input.
 - `algorithms/m2d/`: the M2D baseline.
 - `algorithms/kpse/`: support for K-persistent spread estimation.
 - `simulation/main.cpp`: the validated command-line benchmark driver.
+- `simulation/multiperiod.cpp`: the KPSE and HSCD multi-period driver.
 - `data/00.txt`: the bundled example input.
 - `hardware/UniSketch.p4`: the P4_16 data-plane implementation.
 - `utils/`: shared data structures and the public-domain MurmurHash3 code.
-- `scripts/`: minimal and all-algorithm workflows.
+- `scripts/`: minimal, single-period, multi-period, and combined workflows.
 - `tests/`: CLI, sanitizer, workflow, and packaging checks.
 
 ## Requirements
@@ -71,12 +72,15 @@ of the tested host.
 From the repository root:
 
 ```bash
-make
-make run-minimal
+make make-single
+make test-single
+make run-single
 ```
 
-The first command creates `build/unisketch`. The second runs UniSketch with a
-2,048 KiB memory budget, seed `1`, SSD threshold `100`, and the bundled input.
+These commands build, test, and run only the single-period PFSE and SSD path
+using the bundled input. They do not build or invoke KPSE or HSCD, so they are
+the recommended evaluation path when no suitable multi-period trace is
+available. Use plain `make` to build both drivers.
 
 ## Expected Output
 
@@ -116,8 +120,8 @@ fields should match exactly. Reference values for every baseline are listed in
 
 ## Evaluated Tasks and Metrics
 
-The bundled data contains one measurement period, so the executable evaluation
-covers only these two tasks:
+The bundled data contains one measurement period, so it provides reference
+results for these two tasks:
 
 - **Per-flow spread estimation (PFSE).** For each flow, ground truth is the
   number of distinct elements in the input. The reported mean relative error is
@@ -144,12 +148,96 @@ The algorithm modes use the following components for these tasks:
 | `m2d` | M2D per-flow query | M2D heaps |
 
 RSKT remains active in the insertion path of `vbitmap-ss-rskt`, but it is not
-used for PFSE or SSD. KPSE and HSCD require multiple measurement periods and
-are therefore outside the bundled single-period example.
+used for PFSE or SSD. KPSE and HSCD require multiple measurement periods. The
+artifact provides runnable paths for both tasks, but evaluators must supply
+their own per-period inputs because the bundled example covers only one period.
+
+### Multi-period tasks
+
+Build only the multi-period driver with `make make-multi`. Every period input
+uses the same `element_id flow_id` format described in [Input
+Data](#input-data). Within one period, repeated copies of a pair count once in
+the ground truth. The order of the `--period-input` options is the chronological
+order of the measurement periods.
+
+#### K-persistent spread estimation (KPSE)
+
+KPSE estimates, for every flow, the number of distinct elements that appear in
+at least `K` of the supplied periods. The number of `--period-input` options is
+`T`, and the driver requires `1 <= K <= T`. The following filenames are
+placeholders; replace every `/path/to/period-N.txt` with a consecutive-period
+input supplied by the evaluator:
+
+```bash
+./build/unisketch-multiperiod kpse \
+  --memory-kb 2048 \
+  --k 2 \
+  --period-input /path/to/period-1.txt \
+  --period-input /path/to/period-2.txt \
+  --period-input /path/to/period-3.txt
+```
+
+`--memory-kb` is the physical bitmap budget for each period. The virtual
+per-flow bitmap defaults to 5,000 bits and can be changed with
+`--virtual-bitmap-bits`. The driver constructs exact period-membership ground
+truth and reports `KPSE MRE`, the mean of
+`abs(actual - estimate) / actual` over flows whose ground-truth K-persistent
+spread is nonzero. It also reports the number of flows included in that mean.
+
+#### Heavy spread changer detection (HSCD)
+
+HSCD compares two consecutive periods. For each flow, change is the later
+period's spread minus the earlier period's spread. The actual and reported
+top-k sets are ranked independently using exact and estimated spreads,
+respectively; precision, recall, and F1-score compare those two flow sets.
+
+To report the largest increases, run:
+
+```bash
+./build/unisketch-multiperiod hscd \
+  --memory-kb 2048 \
+  --top-k 10 \
+  --direction increase \
+  --seed 1 \
+  --period-input /path/to/earlier-period.txt \
+  --period-input /path/to/later-period.txt
+```
+
+To report the largest decreases, replace `--direction increase` with
+`--direction decrease`. Both input filenames above are placeholders and must
+be replaced with the evaluator's own files. Exactly two `--period-input`
+options are required, with the earlier period first. A flow absent from one
+period has spread zero in that period. If fewer than `--top-k` flows change in
+the requested direction, the corresponding set contains only the flows that
+do change.
+
+No multi-period trace is distributed with this artifact, so the repository
+does not claim fixed KPSE or HSCD reference values. These commands exercise the
+tasks and print their evaluation metrics on user-supplied inputs.
+
+To run both tasks through the Make workflow, provide all period files in
+chronological order as a space-separated `PERIOD_INPUTS` value:
+
+```bash
+make run-multi \
+  PERIOD_INPUTS="/path/to/period-1.txt /path/to/period-2.txt /path/to/period-3.txt" \
+  KPSE_K=2 \
+  HSCD_TOP_K=10 \
+  HSCD_DIRECTION=increase
+```
+
+The paths are placeholders and must be replaced. KPSE uses every listed file;
+HSCD compares the last two files. Because the list is space-separated, its
+individual paths must not contain whitespace. `MEMORY_KB`, `SEED`, and
+`VIRTUAL_BITMAP_BITS` can also be overridden as Make variables. Before
+building or running, `run-multi` and `run-all` verify that `PERIOD_INPUTS`
+contains at least two readable files and otherwise stop with a concise
+diagnostic.
 
 ## Reference Results
 
-The following configuration is used by `make run-minimal` and `make run-all`:
+The following configuration is used by `make run-minimal` and
+`make run-single`:
 
 ```text
 Memory: 2048 KiB
@@ -158,8 +246,8 @@ SSD threshold: 100
 Input: data/00.txt
 ```
 
-For `make run-minimal` and `make run-all`, these ground-truth values must match
-exactly:
+For `make run-minimal` and `make run-single`, these ground-truth values must
+match exactly:
 
 | Field | Expected value |
 | --- | ---: |
@@ -179,25 +267,52 @@ match exactly; allow small floating-point differences across compilers):
 
 ## Evaluation Workflows
 
-The repository provides these build and evaluation workflows:
+The repository separates build, test, and run operations into all-task,
+single-period, and multi-period workflows:
 
 ```bash
-make all          # Build build/unisketch.
-make run-minimal  # Run the primary UniSketch Functional example.
-make run-all      # Run every algorithm on the complete bundled input.
+make                 # Build both drivers; equivalent to make all.
+make make-single     # Build only build/unisketch.
+make make-multi      # Build only build/unisketch-multiperiod.
+
+make test-all        # Test both single-period and multi-period paths.
+make test-single     # Test only PFSE and SSD software paths.
+make test-multi      # Test only KPSE and HSCD software paths.
+
+make run-single      # Run PFSE and SSD for all four software modes.
+make run-multi ...   # Run KPSE and HSCD on supplied period files.
+make run-all ...     # Run all single-period and multi-period tasks.
 ```
 
-`make run-minimal` is the recommended kick-the-tires path. `make run-all`
-verifies every software mode and takes substantially longer
-because it evaluates every baseline on all 907,463 records.
+`make test` remains an alias for `make test-all`. Multi-period tests construct
+small temporary fixtures and therefore do not require an external trace.
+`make run-multi` and `make run-all`, however, require `PERIOD_INPUTS` and the
+same Make variables shown in [Multi-period tasks](#multi-period-tasks).
 
-Both workflows use SSD threshold `100`. To evaluate another threshold, invoke
-the executable directly as shown below.
-
-Run the automated software regression suite with:
+For an evaluator who has only the bundled single-period data, the complete safe
+path is:
 
 ```bash
-make test
+make make-single
+make test-single
+make run-single
+```
+
+The optional `make run-minimal` compatibility target runs only the primary
+UniSketch mode. `run-single` uses SSD threshold `100` by default; override it
+with `SSD_THRESHOLD=N`. To evaluate other configurations, use the variables
+above or invoke the executable directly as shown below.
+
+To run every task when appropriate multi-period data is available:
+
+```bash
+make
+make test-all
+make run-all \
+  PERIOD_INPUTS="/path/to/period-1.txt /path/to/period-2.txt /path/to/period-3.txt" \
+  KPSE_K=2 \
+  HSCD_TOP_K=10 \
+  HSCD_DIRECTION=increase
 ```
 
 Clean generated binaries with:
@@ -297,7 +412,7 @@ an Intel Xeon Platinum 8573C host with Ubuntu 24.04 and G++ 13.3.0:
 
 - `make run-minimal`: approximately 1.3 seconds elapsed and 35,772 KiB peak
   resident memory.
-- `make run-all`: approximately 28.5 seconds elapsed and 67,224 KiB peak
+- `make run-single`: approximately 28.5 seconds elapsed and 67,224 KiB peak
   resident memory.
 
 These values are guidance, not performance guarantees. They vary with the host,
