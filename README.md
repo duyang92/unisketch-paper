@@ -427,6 +427,10 @@ machine with:
 ## License
 
 Unless otherwise noted, the project source code and documentation are licensed
-under the MIT License in [`LICENSE`](LICENSE). `data/00.txt` is excluded from
-that license. MurmurHash3 remains in the public domain under the notice in its
+under the MIT License in [`LICENSE`](LICENSE). `The synthetic example input 
+`data/00.txt` is released under the Creative Commons Attribution 4.0 International 
+(CC BY 4.0) license. MurmurHash3 remains in the public domain under the notice in its
 source files.
+
+
+
