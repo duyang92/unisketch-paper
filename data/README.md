@@ -40,5 +40,5 @@ Use another input file in the same format with the `--input` option:
   --input /path/to/input.txt --seed 1
 ```
 
-`data/00.txt` is not covered by the repository's MIT License. No license grant
-for this data file is made by this repository.
+`The synthetic example input `data/00.txt` is released under the Creative 
+Commons Attribution 4.0 International (CC BY 4.0) license.
